@@ -35,6 +35,8 @@ _LARGE = dict(hidden_size=4096, intermediate_size=11008)  # Qwen2 / Llama-7B
 # Token-count sweeps per model size
 # ---------------------------------------------------------------------------
 _TOKEN_SHAPES: list[tuple[int, int]] = [
+    (1, 128),
+    (1, 256),
     (1, 512),
     (1, 2048),
     (4, 512),
