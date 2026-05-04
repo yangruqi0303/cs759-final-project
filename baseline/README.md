@@ -4,11 +4,10 @@ Reference implementations and benchmarking harness for the CS759 fused-kernel pr
 
 ## Install
 
-```bash
-pip install torch pytest
-```
-
-PyTorch 2.x with CUDA support is required for benchmarks.
+See the top-level [README](../README.md) for the verified conda
+environment (`environment.yml`) and the manual install fallback.
+A working `pytorch-dev` env with PyTorch 2.11+cu130 and nvcc 13.0 is
+assumed below.
 
 ## Run tests
 
@@ -18,13 +17,18 @@ pytest tests/ -v
 
 ## Run benchmarks
 
+
 ```bash
-python benchmarks/bench_pytorch.py --dtype fp32
-python benchmarks/bench_pytorch.py --dtype fp16
-python benchmarks/bench_pytorch.py --dtype bf16
+python benchmarks/bench_pytorch.py --all-dtype
 ```
 
 Results are printed to stdout and saved to `results/pytorch_baseline.csv`.
+
+For a certain `dtype`, e.g. `fp32`, run 
+
+```bash
+python benchmarks/bench_pytorch.py --dtype fp32
+```
 
 ## CUDA kernels
 
@@ -56,11 +60,14 @@ Output is written to `results/cuda_kernels.csv` with the same columns as
 
 | Column | Description |
 |---|---|
+| `kernel` | (CUDA CSV only) implementation tag, e.g. `naive_rmsnorm` |
 | `module` | Module name (`RMSNorm`, `RMSNormLinear`, `RMSNormMLP`) |
 | `batch` | Batch dimension |
 | `seq_len` | Sequence-length dimension |
 | `hidden` | Hidden size (normalisation dimension) |
 | `intermediate` | MLP intermediate size (unused for `RMSNorm`) |
-| `median_ms` | Median GPU time over 100 iterations (ms) |
-| `stdev_ms` | Standard deviation of GPU time (ms) |
+| `median_ms` | Median GPU time across all timed iterations (ms) |
+| `p10_ms` / `p90_ms` | 10th / 90th-percentile GPU time (ms) |
+| `min_ms` | Best single iteration (ms) |
+| `n_iters` | Number of timed iterations (post-warmup) |
 | `dtype` | Data type (`float32`, `float16`, `bfloat16`) |

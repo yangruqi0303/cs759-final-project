@@ -45,9 +45,9 @@ for p in _extra_includes:
 
 _extra_cflags = ["-O3", "-std=c++17"] + _iflags
 _extra_cuda_cflags = [
-    "-O3",
-    "-std=c++17",
-    "-arch=sm_120",
+    "-O3", "-std=c++17",
+    "-gencode=arch=compute_89,code=sm_89",   # for 4060 Ti
+    "-gencode=arch=compute_120,code=sm_120", # for 5070 Ti
     "--expt-relaxed-constexpr",
 ] + _iflags
 

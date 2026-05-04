@@ -1,0 +1,44 @@
+# Conda environment for the CS759 final project — fused CUDA kernels for
+# RMSNorm + MLP.  Tested on RTX 4060 Ti (sm_89) and RTX 5070 Ti (sm_120).
+#
+# Recreate with:
+#     conda env create -f environment.yml
+#     conda activate pytorch-dev
+#
+# Notes:
+#   - PyTorch 2.11 is currently only published for CUDA 13 (cu130 wheel),
+#     so nvcc 13.x is required for the host/runtime headers to match.
+#   - `cuda-nvcc` from the nvidia channel provides nvcc itself; cudart/cublas
+#     headers + libs come from `cuda-cudart-dev` and `libcublas-dev`.
+#   - Other CUDA libraries that ATen needs at compile time (notably
+#     `cusparse.h`) are pulled in as transitive pip dependencies of the
+#     torch+cu130 wheel under the `nvidia.cu13` namespace package; the JIT
+#     loader in `kernels/__init__.py` finds them automatically.
+#   - `gxx_linux-64` provides the host C++ compiler that nvcc invokes via
+#     `-ccbin`.  Pinning it avoids ABI mismatches against PyTorch's prebuilt
+#     libs.
+
+name: pytorch-dev
+channels:
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.14
+  - pip
+  # Host toolchain for nvcc
+  - gcc_linux-64=14
+  - gxx_linux-64=14
+  - sysroot_linux-64=2.28
+  # CUDA 13 toolkit (compile-time)
+  - nvidia::cuda-nvcc=13.0
+  - nvidia::cuda-cudart-dev=13.0
+  - nvidia::libcublas-dev=13.0
+  - nvidia::cuda-cccl=13.0
+  - pip:
+      # PyTorch 2.11 built against CUDA 13.0
+      - --extra-index-url https://download.pytorch.org/whl/cu130
+      - torch==2.11.0
+      - torchvision==0.26.0
+      # JIT build + tests
+      - ninja>=1.11
+      - pytest>=8
