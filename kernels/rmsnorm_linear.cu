@@ -1,4 +1,4 @@
-// Fused RMSNorm + Linear CUDA entry point (kernel v1).
+// Fused RMSNorm + Linear CUDA entry point.
 //
 // This version keeps GEMM on the cuBLAS path: first run the shared RMSNorm
 // CUDA kernel, then launch cuBLAS GEMM for the linear projection.
@@ -62,7 +62,7 @@ torch::Tensor rmsnorm_linear_cuda(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("rmsnorm_linear_cuda", &rmsnorm_linear_cuda,
-          "RMSNorm followed by Linear using CUDA RMSNorm and cuBLAS GEMM",
+          "RMSNormLinear: CUDA RMSNorm plus cuBLAS GEMM",
           pybind11::arg("x"),
           pybind11::arg("weight"),
           pybind11::arg("gamma"),

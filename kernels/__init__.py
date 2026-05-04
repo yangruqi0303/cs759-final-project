@@ -5,9 +5,18 @@ Importing this package compiles CUDA sources on first use via
 Python callables.
 
 Usage:
-    from kernels import rmsnorm_cuda, rmsnorm_linear_cuda
+    from kernels import (
+        rmsnorm_cuda,
+        rmsnorm_linear_cuda,
+        rmsnorm_linear_naive_cuda,
+        rmsnorm_linear_tiled_cuda,
+        rmsnorm_linear_prologue_cuda,
+    )
     y = rmsnorm_cuda(x, weight, eps=1e-6)
     z = rmsnorm_linear_cuda(x, linear_weight, gamma, eps=1e-6)
+    z_naive = rmsnorm_linear_naive_cuda(x, linear_weight, gamma, eps=1e-6)
+    z_tiled = rmsnorm_linear_tiled_cuda(x, linear_weight, gamma, eps=1e-6)
+    z_prologue = rmsnorm_linear_prologue_cuda(x, linear_weight, gamma, eps=1e-6)
 """
 
 from __future__ import annotations
@@ -72,6 +81,30 @@ _rmsnorm_linear_ext = load(
     verbose=True,
 )
 
+_rmsnorm_linear_naive_ext = load(
+    name="rmsnorm_linear_naive_cuda_ext",
+    sources=[str(_THIS_DIR / "rmsnorm_linear_naive.cu")],
+    extra_cflags=_extra_cflags,
+    extra_cuda_cflags=_extra_cuda_cflags,
+    verbose=True,
+)
+
+_rmsnorm_linear_tiled_ext = load(
+    name="rmsnorm_linear_tiled_cuda_ext",
+    sources=[str(_THIS_DIR / "rmsnorm_linear_tiled.cu")],
+    extra_cflags=_extra_cflags,
+    extra_cuda_cflags=_extra_cuda_cflags,
+    verbose=True,
+)
+
+_rmsnorm_linear_prologue_ext = load(
+    name="rmsnorm_linear_prologue_cuda_ext",
+    sources=[str(_THIS_DIR / "rmsnorm_linear_prologue.cu")],
+    extra_cflags=_extra_cflags,
+    extra_cuda_cflags=_extra_cuda_cflags,
+    verbose=True,
+)
+
 
 def rmsnorm_cuda(
     x: torch.Tensor,
@@ -99,7 +132,7 @@ def rmsnorm_linear_cuda(
     gamma: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Apply RMSNorm followed by a linear projection.
+    """Apply RMSNorm followed by a cuBLAS linear projection.
 
     Args:
         x: contiguous CUDA tensor, shape ``(*, hidden_size)``,
@@ -116,4 +149,94 @@ def rmsnorm_linear_cuda(
     return _rmsnorm_linear_ext.rmsnorm_linear_cuda(x, weight, gamma, eps)
 
 
-__all__ = ["rmsnorm_cuda", "rmsnorm_linear_cuda"]
+def rmsnorm_linear_naive_cuda(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    gamma: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Apply RMSNormLinear with materialized RMSNorm and untiled custom GEMM.
+
+    This version is intentionally simple and slow: one CUDA thread computes one
+    output element by reading the full hidden dimension from global memory. It
+    is useful as the lowest custom-GEMM baseline in the variants benchmark.
+
+    Args:
+        x: contiguous CUDA tensor, shape ``(*, hidden_size)``,
+           dtype fp32 / fp16 / bf16.
+        weight: contiguous 2-D CUDA tensor of shape
+           ``(out_features, hidden_size)``, same dtype as ``x``.
+        gamma: contiguous 1-D CUDA tensor of shape ``(hidden_size,)``,
+           same dtype as ``x``.
+        eps: numerical-stability epsilon.
+
+    Returns:
+        Tensor of shape ``(*, out_features)`` and the same dtype as ``x``.
+    """
+    return _rmsnorm_linear_naive_ext.rmsnorm_linear_naive_cuda(
+        x, weight, gamma, eps)
+
+
+def rmsnorm_linear_tiled_cuda(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    gamma: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Apply RMSNormLinear with materialized RMSNorm and tiled custom GEMM.
+
+    This version first writes the normalized tensor to global memory, then uses
+    the shared scalar-FMA tiled GEMM helper. It is intended for comparison
+    against the prologue-fused tiled version.
+
+    Args:
+        x: contiguous CUDA tensor, shape ``(*, hidden_size)``,
+           dtype fp32 / fp16 / bf16.
+        weight: contiguous 2-D CUDA tensor of shape
+           ``(out_features, hidden_size)``, same dtype as ``x``.
+        gamma: contiguous 1-D CUDA tensor of shape ``(hidden_size,)``,
+           same dtype as ``x``.
+        eps: numerical-stability epsilon.
+
+    Returns:
+        Tensor of shape ``(*, out_features)`` and the same dtype as ``x``.
+    """
+    return _rmsnorm_linear_tiled_ext.rmsnorm_linear_tiled_cuda(
+        x, weight, gamma, eps)
+
+
+def rmsnorm_linear_prologue_cuda(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    gamma: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Apply RMSNormLinear with a prologue-fused custom GEMM.
+
+    This version computes one RMS scale per row, then applies
+    ``x * scale * gamma`` inside the custom GEMM loop instead of materializing
+    the full normalized tensor.
+
+    Args:
+        x: contiguous CUDA tensor, shape ``(*, hidden_size)``,
+           dtype fp32 / fp16 / bf16.
+        weight: contiguous 2-D CUDA tensor of shape
+           ``(out_features, hidden_size)``, same dtype as ``x``.
+        gamma: contiguous 1-D CUDA tensor of shape ``(hidden_size,)``,
+           same dtype as ``x``.
+        eps: numerical-stability epsilon.
+
+    Returns:
+        Tensor of shape ``(*, out_features)`` and the same dtype as ``x``.
+    """
+    return _rmsnorm_linear_prologue_ext.rmsnorm_linear_prologue_cuda(
+        x, weight, gamma, eps)
+
+
+__all__ = [
+    "rmsnorm_cuda",
+    "rmsnorm_linear_cuda",
+    "rmsnorm_linear_naive_cuda",
+    "rmsnorm_linear_tiled_cuda",
+    "rmsnorm_linear_prologue_cuda",
+]
