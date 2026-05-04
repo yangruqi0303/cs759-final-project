@@ -6,10 +6,13 @@ than cuBLAS on the full project sweep. These configs are larger than unit-test
 shapes so the custom GEMM kernels do measurable work, but still smaller than
 the full 21-config sweep.
 
-The configs cover two regimes:
+The configs cover three regimes:
     1. balanced GEMM cases, which show naive-vs-tiled GEMM differences;
     2. prologue-focused cases, where hidden/tokens are large and out_features
-       is intentionally small so materializing RMSNorm becomes more visible.
+       is intentionally small so materializing RMSNorm becomes more visible;
+    3. L2-overflow prologue cases, where rows*hidden*sizeof(T) exceeds the L2
+       cache (~32 MB on sm_120) so the materialized `normed` cannot stay in
+       L2 and the prologue's saved write+read shows up in DRAM traffic.
 
 Usage:
     python benchmarks/bench_rmsnorm_linear_variants.py --dtype fp32
@@ -35,6 +38,9 @@ from kernels import (
     rmsnorm_linear_naive_cuda,
     rmsnorm_linear_prologue_cuda,
     rmsnorm_linear_tiled_cuda,
+    rmsnorm_linear_prologue_v2_cuda,
+    rmsnorm_linear_tiled_v2_cuda,
+    
 )
 
 WARMUP = 10
@@ -69,6 +75,18 @@ VARIANT_CONFIGS = [
                 batch=1, seq_len=512, hidden_size=4096, intermediate_size=128),
     BenchConfig("prologue_b2_s512_h4096_o128",
                 batch=2, seq_len=512, hidden_size=4096, intermediate_size=128),
+    # L2-overflow prologue cases. The "prologue_*" configs above all leave the
+    # materialized `normed` small enough to fit in L2 (~32 MB on sm_120,
+    # ~36 MB on sm_89), so the tiled variant's extra normed write/read is
+    # absorbed by L2 and prologue's saving never reaches DRAM. These cases
+    # push rows*hidden*sizeof(T) past L2 to expose the saving in real DRAM
+    # traffic. Same hidden/out as `prologue_*` so only rows is differential.
+    #   - b8_s512_h4096_o128 : rows=4096, normed = 64 MB fp32 / 32 MB low-prec
+    #   - b4_s2048_h4096_o128: rows=8192, normed = 128 MB fp32 / 64 MB low-prec
+    BenchConfig("prologue_l2_b8_s512_h4096_o128",
+                batch=8, seq_len=512, hidden_size=4096, intermediate_size=128),
+    BenchConfig("prologue_l2_b4_s2048_h4096_o128",
+                batch=4, seq_len=2048, hidden_size=4096, intermediate_size=128),
 ]
 
 
@@ -166,6 +184,8 @@ def _run_dtype(dtype: torch.dtype, iters: int) -> list[dict[str, object]]:
         ("naive_rmsnorm_linear", rmsnorm_linear_naive_cuda),
         ("tiled_rmsnorm_linear", rmsnorm_linear_tiled_cuda),
         ("prologue_rmsnorm_linear", rmsnorm_linear_prologue_cuda),
+        ("tiled_rmsnorm_linear_v2", rmsnorm_linear_tiled_v2_cuda),
+        ("prologue_rmsnorm_linear_v2", rmsnorm_linear_prologue_v2_cuda),
     ]
     results: list[dict[str, object]] = []
 

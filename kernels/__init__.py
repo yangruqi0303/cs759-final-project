@@ -107,6 +107,22 @@ _rmsnorm_linear_prologue_ext = load(
     verbose=True,
 )
 
+_rmsnorm_linear_tiled_v2_ext = load(
+    name="rmsnorm_linear_tiled_v2_cuda_ext",
+    sources=[str(_THIS_DIR / "rmsnorm_linear_tiled_v2.cu")],
+    extra_cflags=_extra_cflags,
+    extra_cuda_cflags=_extra_cuda_cflags,
+    verbose=True,
+)
+
+_rmsnorm_linear_prologue_v2_ext = load(
+    name="rmsnorm_linear_prologue_v2_cuda_ext",
+    sources=[str(_THIS_DIR / "rmsnorm_linear_prologue_v2.cu")],
+    extra_cflags=_extra_cflags,
+    extra_cuda_cflags=_extra_cuda_cflags,
+    verbose=True,
+)
+
 _rmsnorm_mlp_ext = load(
     name="rmsnorm_mlp_cuda_ext",
     sources=[str(_THIS_DIR / "rmsnorm_mlp.cu")],
@@ -244,6 +260,65 @@ def rmsnorm_linear_prologue_cuda(
         x, weight, gamma, eps)
 
 
+def rmsnorm_linear_tiled_v2_cuda(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    gamma: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Apply RMSNormLinear with materialized RMSNorm and the v2 register-tiled GEMM.
+
+    Companion to ``rmsnorm_linear_prologue_v2_cuda``: the two share the same
+    GEMM body (register tiling, vectorized loads, padded shared tiles) and
+    differ only in whether the normalized tensor is materialized to global
+    memory. Use the pair to isolate the cost of materialization on a GEMM
+    that is no longer dominated by toy-kernel overhead.
+
+    Args:
+        x: contiguous CUDA tensor, shape ``(*, hidden_size)``,
+           dtype fp32 / fp16 / bf16.
+        weight: contiguous 2-D CUDA tensor of shape
+           ``(out_features, hidden_size)``, same dtype as ``x``.
+        gamma: contiguous 1-D CUDA tensor of shape ``(hidden_size,)``,
+           same dtype as ``x``.
+        eps: numerical-stability epsilon.
+
+    Returns:
+        Tensor of shape ``(*, out_features)`` and the same dtype as ``x``.
+    """
+    return _rmsnorm_linear_tiled_v2_ext.rmsnorm_linear_tiled_v2_cuda(
+        x, weight, gamma, eps)
+
+
+def rmsnorm_linear_prologue_v2_cuda(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    gamma: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Apply RMSNormLinear with a prologue-fused v2 register-tiled GEMM.
+
+    Companion to ``rmsnorm_linear_tiled_v2_cuda``. The A-tile load applies
+    ``x * scale * gamma`` on the fly (with gamma cached per K-tile in shared
+    memory and per-row scale cached per block), so the normalized tensor
+    never lands in global memory.
+
+    Args:
+        x: contiguous CUDA tensor, shape ``(*, hidden_size)``,
+           dtype fp32 / fp16 / bf16.
+        weight: contiguous 2-D CUDA tensor of shape
+           ``(out_features, hidden_size)``, same dtype as ``x``.
+        gamma: contiguous 1-D CUDA tensor of shape ``(hidden_size,)``,
+           same dtype as ``x``.
+        eps: numerical-stability epsilon.
+
+    Returns:
+        Tensor of shape ``(*, out_features)`` and the same dtype as ``x``.
+    """
+    return _rmsnorm_linear_prologue_v2_ext.rmsnorm_linear_prologue_v2_cuda(
+        x, weight, gamma, eps)
+
+
 def rmsnorm_mlp_cuda(
     x: torch.Tensor,
     weight1: torch.Tensor,
@@ -276,5 +351,7 @@ __all__ = [
     "rmsnorm_linear_naive_cuda",
     "rmsnorm_linear_tiled_cuda",
     "rmsnorm_linear_prologue_cuda",
+    "rmsnorm_linear_tiled_v2_cuda",
+    "rmsnorm_linear_prologue_v2_cuda",
     "rmsnorm_mlp_cuda",
 ]

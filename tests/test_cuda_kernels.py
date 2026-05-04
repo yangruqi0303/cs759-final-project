@@ -26,6 +26,8 @@ from kernels import (  # noqa: E402
     rmsnorm_linear_naive_cuda,
     rmsnorm_linear_prologue_cuda,
     rmsnorm_linear_tiled_cuda,
+    rmsnorm_linear_prologue_v2_cuda,
+    rmsnorm_linear_tiled_v2_cuda,
     rmsnorm_mlp_cuda,
 )
 
@@ -267,7 +269,58 @@ class TestRMSNormLinearTiledCUDA:
             f"non-finite output for shape={shape} dtype={dtype}"
         )
 
+@pytest.mark.parametrize("shape", _CUSTOM_GEMM_SHAPES, ids=_id)
+@pytest.mark.parametrize("dtype,atol,rtol", _DTYPE_TOL, ids=lambda v: _id(v))
+class TestRMSNormLinearTiledV2CUDA:
+    def test_matches_reference(
+        self,
+        shape: tuple[int, int, int],
+        dtype: torch.dtype,
+        atol: float,
+        rtol: float,
+    ) -> None:
+        torch.manual_seed(6)
+        b, s, h = shape
+        out_features = max(16, h // 2)
 
+        ref = RMSNormLinear(h, out_features).to(DEVICE, dtype)
+        ref.norm.weight.data.uniform_(0.5, 1.5).to(dtype)
+        x = torch.randn(b, s, h, device=DEVICE, dtype=dtype)
+
+        with torch.no_grad():
+            expected = ref(x)
+            candidate = rmsnorm_linear_tiled_v2_cuda(
+                x.contiguous(),
+                ref.linear.weight.detach().contiguous(),
+                ref.norm.weight.detach().contiguous(),
+                ref.norm.eps,
+            )
+
+        assert candidate.shape == (b, s, out_features)
+        assert candidate.dtype == x.dtype
+        assert candidate.is_contiguous()
+        assert_close(expected, candidate, atol=atol, rtol=rtol)
+
+    def test_no_nan_inf(
+        self,
+        shape: tuple[int, int, int],
+        dtype: torch.dtype,
+        atol: float,
+        rtol: float,
+    ) -> None:
+        torch.manual_seed(7)
+        b, s, h = shape
+        out_features = max(16, h // 2)
+        x = torch.randn(b, s, h, device=DEVICE, dtype=dtype)
+        weight = torch.randn(out_features, h, device=DEVICE, dtype=dtype)
+        gamma = torch.ones(h, device=DEVICE, dtype=dtype)
+
+        y = rmsnorm_linear_tiled_v2_cuda(x, weight, gamma, 1e-6)
+        assert torch.isfinite(y).all(), (
+            f"non-finite output for shape={shape} dtype={dtype}"
+        )
+        
+        
 @pytest.mark.parametrize("shape", _CUSTOM_GEMM_SHAPES, ids=_id)
 @pytest.mark.parametrize("dtype,atol,rtol", _DTYPE_TOL, ids=lambda v: _id(v))
 class TestRMSNormLinearPrologueCUDA:
@@ -319,6 +372,57 @@ class TestRMSNormLinearPrologueCUDA:
             f"non-finite output for shape={shape} dtype={dtype}"
         )
 
+@pytest.mark.parametrize("shape", _CUSTOM_GEMM_SHAPES, ids=_id)
+@pytest.mark.parametrize("dtype,atol,rtol", _DTYPE_TOL, ids=lambda v: _id(v))
+class TestRMSNormLinearPrologueV2CUDA:
+    def test_matches_reference(
+        self,
+        shape: tuple[int, int, int],
+        dtype: torch.dtype,
+        atol: float,
+        rtol: float,
+    ) -> None:
+        torch.manual_seed(8)
+        b, s, h = shape
+        out_features = max(16, h // 2)
+
+        ref = RMSNormLinear(h, out_features).to(DEVICE, dtype)
+        ref.norm.weight.data.uniform_(0.5, 1.5).to(dtype)
+        x = torch.randn(b, s, h, device=DEVICE, dtype=dtype)
+
+        with torch.no_grad():
+            expected = ref(x)
+            candidate = rmsnorm_linear_prologue_v2_cuda(
+                x.contiguous(),
+                ref.linear.weight.detach().contiguous(),
+                ref.norm.weight.detach().contiguous(),
+                ref.norm.eps,
+            )
+
+        assert candidate.shape == (b, s, out_features)
+        assert candidate.dtype == x.dtype
+        assert candidate.is_contiguous()
+        assert_close(expected, candidate, atol=atol, rtol=rtol)
+
+    def test_no_nan_inf(
+        self,
+        shape: tuple[int, int, int],
+        dtype: torch.dtype,
+        atol: float,
+        rtol: float,
+    ) -> None:
+        torch.manual_seed(9)
+        b, s, h = shape
+        out_features = max(16, h // 2)
+        x = torch.randn(b, s, h, device=DEVICE, dtype=dtype)
+        weight = torch.randn(out_features, h, device=DEVICE, dtype=dtype)
+        gamma = torch.ones(h, device=DEVICE, dtype=dtype)
+
+        y = rmsnorm_linear_prologue_v2_cuda(x, weight, gamma, 1e-6)
+        assert torch.isfinite(y).all(), (
+            f"non-finite output for shape={shape} dtype={dtype}"
+        )
+        
 
 @pytest.mark.parametrize("shape", _SHAPES, ids=_id)
 @pytest.mark.parametrize("dtype,atol,rtol", _DTYPE_TOL, ids=lambda v: _id(v))

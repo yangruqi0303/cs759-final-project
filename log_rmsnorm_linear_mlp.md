@@ -405,3 +405,65 @@ Step 3/4 的结果可以支持以下 final report 说法：
 3. **当前 prologue fusion 没有稳定 speedup**：少数 case 能到约 1.18×-1.26×，但很多 case 持平或更慢，主要受额外 scale kernel launch 和 scalar-FMA GEMM 限制。
 4. **cuBLAS 仍然远强于自写 scalar GEMM**：尤其 fp16/bf16 上，Tensor Core 路径让 cuBLAS default 明显领先 custom variants。
 5. **RMSNormMLP v1 可用但不是 fully fused**：相对 PyTorch 有小幅稳定收益，median 大约 1.04×-1.05×；更大的提升需要 CUTLASS/Tensor Core 级别的 epilogue/prologue fusion。
+
+---
+
+## 补充
+
+### 关于fusion收益
+
+默认的rmsnorm_linear其实没有真的fuse rmsnorm + linear. 如果用pytorch先调用rmsnorm (cuda) 后加一个linear，会发现rmsnorm_linear的提升其实都来自于rmsnorm. 真正的fusion体现再tiled和prologue这两个版本的对比。然而在之前的实验中，由于矩阵乘法实现不够好，导致prologue效果基本被埋没。
+
+
+以下来自claude
+
+Prologue 没拉开 tiled，是因为两者共用一份 ALU-bound 的 toy GEMM，fusion 能省的 normed 物化只占 GEMM 总内存流量的个位数百分比——5–10% 的真实收益被 prologue 自己 inner-loop 的额外乘法和小 read 抵消，剩下的就是噪声。要让 fusion 显式占优，要么把 out_features 推到 ≤ BLOCK_N 让 A 侧重读消失，要么把 GEMM 本身换成 tensor-core / cutlass-级实现让 fusion 不再被 GEMM 时间淹没。
+
+是真正的 fusion。 看 `rmsnorm_linear_prologue.cu:106-113`：
+
+```
+const float xv = to_float<T>(x[(size_t)global_row * hidden_size + global_k]);
+const float gv = to_float<T>(gamma[global_k]);
+v = xv * scale[global_row] * gv;
+```
+
+x * scale * gamma 是在 GEMM 的 A-tile 加载阶段就地算完写进 a_tile[]，normed 从来没出现在 global memory 里。这就是教科书定义的 producer-consumer prologue fusion。和 rmsnorm_linear_tiled.cu 显式 rmsnorm_forward_cuda → linear_tiled_cuda 两次 launch 写中间张量，差别是货真价实的。
+
+但"真正融合"不等于"自动更快"——你的 prologue 版还干了一件事：对同一个 (row, k) 元素，scale 和 gamma 的乘法在每个 column-tile 都被重复算了一次（因为 A-tile 在 column 维度上被重新加载 out_features / BLOCK_N 次）。tiled 版只算一次（在 RMSNorm kernel 里）。所以 prologue 在算术上其实做得更多，只是"读 normed"换成了"读 x + 几次 FMA"，靠 GPU FMA 吞吐量遮掉。
+
+---
+
+后来又实现了**v2**, 使用了更多优化
+
+
+Q2：能不能更快？按 ROI 排好序
+前提：上一个回答的诊断结论——这两份 kernel 共用的 toy GEMM 本身才是天花板。所以下面前两条是 GEMM 优化，第三条之后才是 fusion-specific 的优化。
+
+① 寄存器分块（thread tile），最大单点收益
+现在 BLOCK_M=BLOCK_N=16、256 线程、1 thread = 1 output。每个 K-tile 内层循环每 thread 做 TILE_K=32 次 FMA，但要从 shared memory 读 32 + 32 = 64 个元素——SMEM-load:FMA = 2:1，几乎所有时间花在等 shared memory。
+
+标准 cutlass-style 做法：让一个 thread 算 TM × TN 个输出（典型 TM=TN=8，64 outputs/thread）。配合 BLOCK_M=BLOCK_N=128, TILE_K=16、4 warp/block：
+
+SMEM-load:FMA 从 2:1 降到 ~1:8
+每个 output 累加器留在寄存器里
+通常一步把 toy GEMM 推到 cuBLAS 的 30–60%
+这是单步最大收益，预期在大 shape 上 3–5× 加速。
+
+② 向量化加载（float4 / __half2 / __nv_bfloat162）
+rmsnorm_linear_prologue.cu:108-110 里的 x[…] 和 weight[…] 都是标量 load。把 hidden pad 到 4 的倍数（项目里所有 shape 都满足）后，A 侧用 float4 / half2 做一次拿 4 / 2 个，全局内存事务数 ÷4 / ÷2，DRAM busy 直接降。同样改 weight 加载。
+
+预期 1.5–2× 加速，跟 ① 是正交的，可以叠加。
+
+③ 把 gamma 整段缓到 shared memory（fusion-specific）
+现在 gamma[global_k] 在每个 K-tile 都被 256 个线程重复 load。gamma 只有 hidden 个元素，对所有 row、所有 column tile 完全公共。两种做法：
+
+per-block 一次性载入：开 __shared__ float gamma_sm[hidden]（hidden ≤ 4096 太大，不可行）
+per-K-tile 载入：在 K-tile 开头，让 TILE_K 个 thread 协作把 gamma[k0 : k0+TILE_K] 拷到 __shared__ float gamma_tile[TILE_K]，A-load 阶段直接读 gamma_tile[tile_k]
+第二种几乎零代码量，省的是 BLOCK_N × (out_features/BLOCK_N) × hidden = out × hidden 次 global gamma 读 → 只剩 (out/BLOCK_N) × hidden 次。在 prologue-focused shape 上能省下 5–10%。
+
+④ 把 scale 缓到 register
+rmsnorm_linear_prologue.cu:111 里 scale[global_row] 也是每次 K-tile 重读。BLOCK_M=16 对应 16 个 row，每个 thread 在整段 K-loop 中 row 是固定的——直接在 kernel 入口 load 一次 float my_scale = scale[row] 存寄存器，然后 inner loop 里所有 A-load 用 my_scale。零开销，纯净化代码。
+
+实际收益小（scale 经常已经命中 L1），但代码更干净，纳入 ① 重写的时候顺手做。
+
+实现后的结果，在一些体系下能看到prologue版本明显的优势，有时还能超过cuBLAS版本。值得分析。结果都在 `rmsnorm_linear_variants.csv`里。
