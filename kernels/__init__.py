@@ -11,12 +11,14 @@ Usage:
         rmsnorm_linear_naive_cuda,
         rmsnorm_linear_tiled_cuda,
         rmsnorm_linear_prologue_cuda,
+        rmsnorm_mlp_cuda,
     )
     y = rmsnorm_cuda(x, weight, eps=1e-6)
     z = rmsnorm_linear_cuda(x, linear_weight, gamma, eps=1e-6)
     z_naive = rmsnorm_linear_naive_cuda(x, linear_weight, gamma, eps=1e-6)
     z_tiled = rmsnorm_linear_tiled_cuda(x, linear_weight, gamma, eps=1e-6)
     z_prologue = rmsnorm_linear_prologue_cuda(x, linear_weight, gamma, eps=1e-6)
+    h = rmsnorm_mlp_cuda(x, linear1_weight, linear2_weight, gamma, eps=1e-6)
 """
 
 from __future__ import annotations
@@ -102,6 +104,15 @@ _rmsnorm_linear_prologue_ext = load(
     sources=[str(_THIS_DIR / "rmsnorm_linear_prologue.cu")],
     extra_cflags=_extra_cflags,
     extra_cuda_cflags=_extra_cuda_cflags,
+    verbose=True,
+)
+
+_rmsnorm_mlp_ext = load(
+    name="rmsnorm_mlp_cuda_ext",
+    sources=[str(_THIS_DIR / "rmsnorm_mlp.cu")],
+    extra_cflags=_extra_cflags,
+    extra_cuda_cflags=_extra_cuda_cflags,
+    extra_ldflags=["-lcublas"],
     verbose=True,
 )
 
@@ -233,10 +244,37 @@ def rmsnorm_linear_prologue_cuda(
         x, weight, gamma, eps)
 
 
+def rmsnorm_mlp_cuda(
+    x: torch.Tensor,
+    weight1: torch.Tensor,
+    weight2: torch.Tensor,
+    gamma: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Apply RMSNorm followed by a two-layer GELU MLP.
+
+    Args:
+        x: contiguous CUDA tensor, shape ``(*, hidden_size)``,
+           dtype fp32 / fp16 / bf16.
+        weight1: contiguous 2-D CUDA tensor of shape
+           ``(intermediate_size, hidden_size)``, same dtype as ``x``.
+        weight2: contiguous 2-D CUDA tensor of shape
+           ``(hidden_size, intermediate_size)``, same dtype as ``x``.
+        gamma: contiguous 1-D CUDA tensor of shape ``(hidden_size,)``,
+           same dtype as ``x``.
+        eps: numerical-stability epsilon.
+
+    Returns:
+        Tensor of the same shape and dtype as ``x``.
+    """
+    return _rmsnorm_mlp_ext.rmsnorm_mlp_cuda(x, weight1, weight2, gamma, eps)
+
+
 __all__ = [
     "rmsnorm_cuda",
     "rmsnorm_linear_cuda",
     "rmsnorm_linear_naive_cuda",
     "rmsnorm_linear_tiled_cuda",
     "rmsnorm_linear_prologue_cuda",
+    "rmsnorm_mlp_cuda",
 ]

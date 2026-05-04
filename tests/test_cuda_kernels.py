@@ -13,7 +13,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from baseline.pytorch_ref import RMSNorm, RMSNormLinear
+from baseline.pytorch_ref import RMSNorm, RMSNormLinear, RMSNormMLP
 from tests.test_pytorch_ref import assert_close
 
 # JIT-compile happens on import; skip the whole module cleanly if no GPU.
@@ -26,6 +26,7 @@ from kernels import (  # noqa: E402
     rmsnorm_linear_naive_cuda,
     rmsnorm_linear_prologue_cuda,
     rmsnorm_linear_tiled_cuda,
+    rmsnorm_mlp_cuda,
 )
 
 DEVICE = "cuda"
@@ -319,6 +320,60 @@ class TestRMSNormLinearPrologueCUDA:
         )
 
 
+@pytest.mark.parametrize("shape", _SHAPES, ids=_id)
+@pytest.mark.parametrize("dtype,atol,rtol", _DTYPE_TOL, ids=lambda v: _id(v))
+class TestRMSNormMLPCUDA:
+    def test_matches_reference(
+        self,
+        shape: tuple[int, int, int],
+        dtype: torch.dtype,
+        atol: float,
+        rtol: float,
+    ) -> None:
+        torch.manual_seed(4)
+        b, s, h = shape
+        intermediate = max(16, h // 4)
+
+        ref = RMSNormMLP(h, intermediate).to(DEVICE, dtype)
+        ref.norm.weight.data.uniform_(0.5, 1.5).to(dtype)
+        x = torch.randn(b, s, h, device=DEVICE, dtype=dtype)
+
+        with torch.no_grad():
+            expected = ref(x)
+            candidate = rmsnorm_mlp_cuda(
+                x.contiguous(),
+                ref.linear1.weight.detach().contiguous(),
+                ref.linear2.weight.detach().contiguous(),
+                ref.norm.weight.detach().contiguous(),
+                ref.norm.eps,
+            )
+
+        assert candidate.shape == x.shape
+        assert candidate.dtype == x.dtype
+        assert candidate.is_contiguous()
+        assert_close(expected, candidate, atol=atol, rtol=rtol)
+
+    def test_no_nan_inf(
+        self,
+        shape: tuple[int, int, int],
+        dtype: torch.dtype,
+        atol: float,
+        rtol: float,
+    ) -> None:
+        torch.manual_seed(5)
+        b, s, h = shape
+        intermediate = max(16, h // 4)
+        x = torch.randn(b, s, h, device=DEVICE, dtype=dtype)
+        weight1 = torch.randn(intermediate, h, device=DEVICE, dtype=dtype)
+        weight2 = torch.randn(h, intermediate, device=DEVICE, dtype=dtype)
+        gamma = torch.ones(h, device=DEVICE, dtype=dtype)
+
+        y = rmsnorm_mlp_cuda(x, weight1, weight2, gamma, 1e-6)
+        assert torch.isfinite(y).all(), (
+            f"non-finite output for shape={shape} dtype={dtype}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Input validation
 # ---------------------------------------------------------------------------
@@ -397,3 +452,19 @@ class TestInputValidation:
         gamma = torch.ones(16, device=DEVICE, dtype=torch.float32)
         with pytest.raises(RuntimeError, match="dtype"):
             rmsnorm_linear_tiled_cuda(x, weight, gamma, 1e-6)
+
+    def test_rmsnorm_mlp_weight_shape_mismatch_raises(self) -> None:
+        x = torch.randn(2, 16, device=DEVICE)
+        weight1 = torch.randn(8, 16, device=DEVICE)
+        weight2 = torch.randn(16, 12, device=DEVICE)
+        gamma = torch.ones(16, device=DEVICE)
+        with pytest.raises(RuntimeError, match="size"):
+            rmsnorm_mlp_cuda(x, weight1, weight2, gamma, 1e-6)
+
+    def test_rmsnorm_mlp_dtype_mismatch_raises(self) -> None:
+        x = torch.randn(2, 16, device=DEVICE, dtype=torch.float16)
+        weight1 = torch.randn(8, 16, device=DEVICE, dtype=torch.float16)
+        weight2 = torch.randn(16, 8, device=DEVICE, dtype=torch.float16)
+        gamma = torch.ones(16, device=DEVICE, dtype=torch.float32)
+        with pytest.raises(RuntimeError, match="dtype"):
+            rmsnorm_mlp_cuda(x, weight1, weight2, gamma, 1e-6)

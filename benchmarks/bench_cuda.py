@@ -23,7 +23,11 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from baseline.configs import BENCH_CONFIGS, BenchConfig
-from kernels import rmsnorm_cuda, rmsnorm_linear_cuda
+from kernels import (
+    rmsnorm_cuda,
+    rmsnorm_linear_cuda,
+    rmsnorm_mlp_cuda,
+)
 
 WARMUP = 10
 TIMED = 200
@@ -139,6 +143,55 @@ def bench_rmsnorm_linear(cfg: BenchConfig, dtype: torch.dtype) -> dict[str, obje
     }
 
 
+def bench_rmsnorm_mlp(cfg: BenchConfig, dtype: torch.dtype) -> dict[str, object]:
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+
+    x = torch.randn(cfg.batch, cfg.seq_len, cfg.hidden_size, device="cuda", dtype=dtype)
+    weight1 = torch.randn(
+        cfg.intermediate_size,
+        cfg.hidden_size,
+        device="cuda",
+        dtype=dtype,
+    )
+    weight2 = torch.randn(
+        cfg.hidden_size,
+        cfg.intermediate_size,
+        device="cuda",
+        dtype=dtype,
+    )
+    gamma = torch.ones(cfg.hidden_size, device="cuda", dtype=dtype)
+    eps = 1e-6
+
+    with torch.no_grad():
+        times = _time_fn(
+            lambda: rmsnorm_mlp_cuda(x, weight1, weight2, gamma, eps),
+            warmup=WARMUP,
+            iters=TIMED,
+        )
+
+    median = statistics.median(times)
+    p10 = _percentile(times, 10)
+    p90 = _percentile(times, 90)
+    min_t = min(times)
+
+    return {
+        "kernel": "fused_rmsnorm_mlp",
+        "module": "RMSNormMLP",
+        "batch": cfg.batch,
+        "seq_len": cfg.seq_len,
+        "hidden": cfg.hidden_size,
+        "intermediate": cfg.intermediate_size,
+        "median_ms": round(median, 4),
+        "p10_ms": round(p10, 4),
+        "p90_ms": round(p90, 4),
+        "min_ms": round(min_t, 4),
+        "n_iters": TIMED,
+        "dtype": str(dtype).split(".")[-1],
+    }
+
+
 FIELDNAMES = [
     "kernel", "module", "batch", "seq_len", "hidden", "intermediate",
     "median_ms", "p10_ms", "p90_ms", "min_ms", "n_iters", "dtype",
@@ -152,6 +205,7 @@ HEADER_FMT = (
 
 def _run_dtype(dtype: torch.dtype) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
+    bench_fns = [bench_rmsnorm, bench_rmsnorm_linear, bench_rmsnorm_mlp]
 
     print(f"\n=== dtype: {dtype} ===")
     print(HEADER_FMT.format(
@@ -162,7 +216,7 @@ def _run_dtype(dtype: torch.dtype) -> list[dict[str, object]]:
     print("-" * 125)
 
     for cfg in BENCH_CONFIGS:
-        for bench_fn in [bench_rmsnorm, bench_rmsnorm_linear]:
+        for bench_fn in bench_fns:
             row = bench_fn(cfg, dtype)
             results.append(row)
             print(HEADER_FMT.format(
