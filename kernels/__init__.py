@@ -1,12 +1,13 @@
 """JIT-compiled CUDA kernels for the cs759 final project.
 
-Importing this package compiles `rmsnorm.cu` on first use via
+Importing this package compiles CUDA sources on first use via
 `torch.utils.cpp_extension.load` and exposes the entry points as plain
 Python callables.
 
 Usage:
-    from kernels import rmsnorm_cuda
+    from kernels import rmsnorm_cuda, rmsnorm_linear_cuda
     y = rmsnorm_cuda(x, weight, eps=1e-6)
+    z = rmsnorm_linear_cuda(x, linear_weight, gamma, eps=1e-6)
 """
 
 from __future__ import annotations
@@ -51,11 +52,23 @@ _extra_cuda_cflags = [
     "--expt-relaxed-constexpr",
 ] + _iflags
 
-_ext = load(
+# Keep each CUDA entry point as a separate JIT extension. That lets each .cu
+# file own a small PYBIND11_MODULE while sharing templated CUDA code through
+# rmsnorm_common.cuh.
+_rmsnorm_ext = load(
     name="rmsnorm_cuda_ext",
     sources=[str(_THIS_DIR / "rmsnorm.cu")],
     extra_cflags=_extra_cflags,
     extra_cuda_cflags=_extra_cuda_cflags,
+    verbose=True,
+)
+
+_rmsnorm_linear_ext = load(
+    name="rmsnorm_linear_cuda_ext",
+    sources=[str(_THIS_DIR / "rmsnorm_linear.cu")],
+    extra_cflags=_extra_cflags,
+    extra_cuda_cflags=_extra_cuda_cflags,
+    extra_ldflags=["-lcublas"],
     verbose=True,
 )
 
@@ -77,7 +90,30 @@ def rmsnorm_cuda(
     Returns:
         Tensor of the same shape and dtype as ``x``.
     """
-    return _ext.rmsnorm_cuda(x, weight, eps)
+    return _rmsnorm_ext.rmsnorm_cuda(x, weight, eps)
 
 
-__all__ = ["rmsnorm_cuda"]
+def rmsnorm_linear_cuda(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    gamma: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Apply RMSNorm followed by a linear projection.
+
+    Args:
+        x: contiguous CUDA tensor, shape ``(*, hidden_size)``,
+           dtype fp32 / fp16 / bf16.
+        weight: contiguous 2-D CUDA tensor of shape
+           ``(out_features, hidden_size)``, same dtype as ``x``.
+        gamma: contiguous 1-D CUDA tensor of shape ``(hidden_size,)``,
+           same dtype as ``x``.
+        eps: numerical-stability epsilon.
+
+    Returns:
+        Tensor of shape ``(*, out_features)`` and the same dtype as ``x``.
+    """
+    return _rmsnorm_linear_ext.rmsnorm_linear_cuda(x, weight, gamma, eps)
+
+
+__all__ = ["rmsnorm_cuda", "rmsnorm_linear_cuda"]
