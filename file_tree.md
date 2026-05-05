@@ -71,18 +71,4 @@ cs759-final-project/
 ├── log_baseline.md                  # Step 1：PyTorch 参考 + 测试 + bench
 ├── log_naive_rmsnorm.md             # Step 2：naive CUDA RMSNorm
 ├── log_rmsnorm_linear_mlp.md        # RMSNormLinear 变体与 RMSNormMLP 融合实验记录
-│
-└── .claude/worktrees/suspicious-chatelet-a4d2db   # git submodule（Claude 工作树，可选检出）
 ```
-
-## 已完成（概要）
-
-- **Step 1** — `log_baseline.md`：`baseline/` 三模块 + `test_pytorch_ref.py` + `bench_pytorch.py`
-- **Step 2** — `log_naive_rmsnorm.md`：`rmsnorm.cu` + JIT + `bench_cuda.py` 中 RMSNorm 路径
-- **扩展** — `kernels/` 中 RMSNormLinear 多实现（cuBLAS、naive、tiled、prologue 及 v2）、`rmsnorm_mlp.cu`；`bench_rmsnorm_linear_*.py`；`results/` 与 `results.5070Ti/`；`plots/` 全套脚本与 `figures/`；`log_rmsnorm_linear_mlp.md` 记录融合与变体实验
-
-## 后续扩展点
-
-- `kernels/rmsnorm_vec.cu`（或等价向量化）— 大 shape 上补齐 naive RMSNorm 相对 PyTorch 的带宽差距
-- 更深 MLP / 其他激活或布局的融合与 profile 驱动调参
-- 新 kernel 时在 `bench_cuda.py` 增加 `KERNEL_NAME` 行格式，CSV 与 `plots/common.py` 约定列名即可接图
